@@ -8,7 +8,8 @@ import numpy as np
 import os
 
 import nibabel as nib
-
+os.environ['VXM_BACKEND'] = 'pytorch'
+import voxelmorph as vxm
 from vqfr.archs import build_network
 from vqfr.losses import build_loss
 from vqfr.losses.losses import r1_penalty
@@ -19,11 +20,11 @@ from .base_model import BaseModel
 
 
 @MODEL_REGISTRY.register()
-class VQFRv2Model(BaseModel):
+class VQFRv2transModel(BaseModel):
     """VQGAN_BASE_Model"""
 
     def __init__(self, opt):
-        super(VQFRv2Model, self).__init__(opt)
+        super(VQFRv2transModel, self).__init__(opt)
 
         # define network
         if 'network_g' in self.opt:
@@ -34,6 +35,7 @@ class VQFRv2Model(BaseModel):
         self.net_sr = build_network(opt['network_sr'])
         self.net_sr = self.model_to_device(self.net_sr)
         self.print_network(self.net_sr)
+
         # define network net_d
         if 'network_d' in self.opt:
             self.net_d = build_network(self.opt['network_d'])
@@ -51,6 +53,27 @@ class VQFRv2Model(BaseModel):
                     self.net_d_local)  # to avoid broadcast buffer error
             self.net_d_local = self.model_to_device(self.net_d_local)
             self.print_network(self.net_d_local)
+
+        # define deformation model
+        self.enc_nf = [16, 32]
+        self.dec_nf = [32, 32, 32, 16, 16]
+        self.int_steps = 7
+        self.int_downsize = 2
+        self.net_defom = vxm.networks.VxmDense_uner(
+            inshape=[256,256],
+            nb_unet_features=[self.enc_nf, self.dec_nf],
+            bidir=False,
+            int_steps=self.int_steps,
+            int_downsize=self.int_downsize
+        )
+        self.net_defom = self.model_to_device(self.net_defom)
+        
+        
+        self.deform_loss1 = torch.nn.MSELoss()
+        self.deform_loss2 = torch.nn.MSELoss()
+        self.uncerloss = torch.nn.L1Loss()
+        
+        self.print_network(self.net_defom)
 
         # load pretrained models
         logger = get_root_logger()
@@ -78,7 +101,12 @@ class VQFRv2Model(BaseModel):
             logger.info('Loading net_sr:')
             param_key = self.opt['path'].get('param_key_sr', 'params')
             self.load_network(self.net_sr, load_path, self.opt['path'].get('strict_load_sr', True), param_key)
-
+        
+        load_path = self.opt['path'].get('pretrain_network_deform', None)
+        if load_path is not None:
+            logger.info('Loading net_deform')
+            param_key = self.opt['path'].get('param_key_deform', 'params')
+            self.load_network(self.net_sr, load_path, self.opt['path'].get('strict_load_deform', True), param_key)
         if self.is_train:
             self.init_training_settings()
 
@@ -160,6 +188,12 @@ class VQFRv2Model(BaseModel):
                                                         **train_opt['optim_d'])
             self.optimizers.append(self.optimizer_d_local)
 
+        # optimizer deformer
+        if 'optim_deform' in train_opt:
+            optim_type = train_opt['optim_deform'].pop('type')
+            self.optimizer_deform = self.get_optimizer(optim_type, self.net_defom.parameters(), **train_opt['optim_deform'])
+            self.optimizers.append(self.optimizer_deform)
+
     def feed_data(self, data):
         self.lq = data['lq'].to(self.device)
         if 'gt' in data:
@@ -177,17 +211,46 @@ class VQFRv2Model(BaseModel):
         d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
         return d_weight
 
-    def optimize_parameters(self, current_iter):
-        loss_dict = OrderedDict()
+    def set_requires_grad(self, nets, requires_grad=False):
+        """Set requies_grad=Fasle for all the networks to avoid unnecessary computations
+        Parameters:
+            nets (network list)   -- a list of networks
+            requires_grad (bool)  -- whether the networks require gradients or not
+        """
+        if not isinstance(nets, list):
+            nets = [nets]
+        for net in nets:
+            if net is not None:
+                for param in net.parameters():
+                    param.requires_grad = requires_grad
 
-        self.optimizer_sr_enc.zero_grad()
-        self.optimizer_sr_maindec.zero_grad()
-        
-        # get_lq result
-        lq_res = self.net_sr(self.lq)
+    def optimize_parameters(self, current_iter):
+        torch.autograd.set_detect_anomaly(True)
+        loss_dict = OrderedDict()
         
         l_total_g = 0.0
-
+        self.optimizer_deform.zero_grad()
+        self.optimizer_sr_enc.zero_grad()
+        self.optimizer_sr_maindec.zero_grad()
+        # registration loss and uncertainty loss, train the registration model
+        self.set_requires_grad([self.net_defom], True)
+        
+        if self.opt['train'].get('use_deform', 0) == True and current_iter > self.opt['train'].get('deform_start_iter', 0):
+            # get_lq result
+            y_pred = self.net_defom(self.lq[:,1:2,:,:], self.gt[:,1:2,:,:])
+            self.lq = y_pred[0].repeat(1, 3, 1, 1)
+            
+            all_zero = torch.zeros_like(y_pred[1])
+            loss1 = self.deform_loss1(self.gt, y_pred[0])
+            loss2 = self.deform_loss2(all_zero, y_pred[1])
+            s = torch.exp(-y_pred[2])
+            uncer_loss = self.uncerloss(torch.mul(self.gt, s),torch.mul(y_pred[0], s)) + 0.02 * torch.mean(y_pred[2])
+            l_total_g += loss1
+            l_total_g += loss2
+            l_total_g += 0.1 * uncer_loss
+        
+        lq_res = self.net_sr(self.lq)
+        
         # pixel reconstruction loss
         if self.cri_pix:
             l_rec = self.cri_pix(lq_res['main_dec'], self.gt)
@@ -195,7 +258,7 @@ class VQFRv2Model(BaseModel):
             l_total_g += l_rec
 
         if self.cri_quant_feature or self.cri_quant_index:
-            # get hr result
+            # get deformation result and hr result
             with torch.no_grad():
                 hq_res, _ = self.net_g(self.gt, return_keys=('feat_dict'))
         
@@ -247,6 +310,8 @@ class VQFRv2Model(BaseModel):
             l_total_g += l_g_gan
 
         l_total_g.backward()
+
+        self.optimizer_deform.step()
         self.optimizer_sr_enc.step()
         self.optimizer_sr_maindec.step()
 
@@ -291,7 +356,7 @@ class VQFRv2Model(BaseModel):
             loss_dict['fake_score_local'] = fake_pred.detach().mean()
             l_d.backward()
             self.optimizer_d_local.step()
-
+        
         self.log_dict = self.reduce_loss_dict(loss_dict)
 
     def test(self):
@@ -355,6 +420,74 @@ class VQFRv2Model(BaseModel):
             pbar.update(1)
             pbar.set_description(f'Test {img_name}')
         pbar.close()
+
+        if with_metrics:
+            for metric in self.metric_results.keys():
+                self.metric_results[metric] /= (idx + 1)
+
+            self._log_validation_metric_values(current_iter, dataset_name, tb_logger)
+
+    def tonifty_validation(self, dataloader, current_iter, tb_logger, save_img):
+        dataset_name = dataloader.dataset.opt['name']
+        with_metrics = self.opt['val'].get('metrics') is not None
+        if with_metrics:
+            self.metric_results = {metric: 0 for metric in self.opt['val']['metrics'].keys()}
+        pbar = tqdm(total=len(dataloader), unit='image')
+
+        srvolume = []
+        gtvolume = []
+
+        for idx, val_data in enumerate(dataloader):
+            img_name = osp.splitext(osp.basename(val_data['lq_path'][0]))[0]
+            
+            self.feed_data(val_data)
+            self.test()
+            visuals = self.get_current_visuals()
+            range = self.opt['val'].get('range', [-1, 1])
+
+            srvolume.append(visuals['sr'][0,1,:,:].cpu().detach().numpy())
+            gtvolume.append(visuals['gt'][0,1,:,:].cpu().detach().numpy())
+            
+            sr_img = tensor2img([visuals['sr']], min_max=range)
+            gt_img = tensor2img([visuals['gt']], min_max=range)
+            
+            if 'gt' in visuals:
+                gt_img = tensor2img([visuals['gt']], min_max=range)
+                del self.gt
+            # tentative for out of GPU memory
+            del self.lq
+            del self.output
+            torch.cuda.empty_cache()
+            
+            if save_img:
+                if self.opt['is_train']:
+                    save_img_path = osp.join(self.opt['path']['visualization'], img_name,
+                                             f'{img_name}_{current_iter}.png')
+                else:
+                    if self.opt['val']['suffix']:
+                        save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,
+                                                 f'{img_name}_{self.opt["val"]["suffix"]}.png')
+                    else:
+                        save_img_path = osp.join(self.opt['path']['visualization'], dataset_name,
+                                                 f'{img_name}_{self.opt["name"]}.png')
+                imwrite(sr_img, save_img_path)
+
+            if with_metrics:
+                # calculate metrics
+                for name, opt_ in self.opt['val']['metrics'].items():
+                    metric_data = dict(img=sr_img, img2=gt_img)
+                    self.metric_results[name] += calculate_metric(metric_data, opt_)
+            pbar.update(1)
+            pbar.set_description(f'Test {img_name}')
+        pbar.close()
+
+        srvolume = np.array(srvolume)
+        gtvolume = np.array(gtvolume)
+        srvolume = nib.Nifti1Image(srvolume, np.eye(4))
+        gtvolume = nib.Nifti1Image(gtvolume, np.eye(4))
+        
+        nib.save(srvolume, '/homes/tzheng/code/VQFR/results/tmp/srvolume.nii.gz')
+        nib.save(gtvolume, '/homes/tzheng/code/VQFR/results/tmp/gtvolume.nii.gz')
 
         if with_metrics:
             for metric in self.metric_results.keys():

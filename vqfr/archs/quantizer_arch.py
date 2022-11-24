@@ -1,3 +1,5 @@
+import pdb
+import os
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -70,10 +72,11 @@ class NewReservoirSampler(nn.Module):
 @QUANTIZER_REGISTRY.register()
 class L2VectorQuantizerKmeans(nn.Module):
 
-    def __init__(self, num_code, in_dim, code_dim, reservoir_size, reestimate_iters, reestimate_maxiters, warmup_iters):
+    def __init__(self, num_code, in_dim, code_dim, reservoir_size, reestimate_iters, reestimate_maxiters, warmup_iters, spatial_size):
         super().__init__()
         self.num_code = num_code
         self.code_dim = code_dim
+        self.spatial_size = spatial_size
         self.beta = 0.25
 
         self.reestimate_iters = reestimate_iters
@@ -167,7 +170,7 @@ class L2VectorQuantizerKmeans(nn.Module):
 @QUANTIZER_REGISTRY.register()
 class L2VectorQuantizer(nn.Module):
 
-    def __init__(self, num_code, code_dim, spatial_size):
+    def __init__(self, num_code, code_dim, spatial_size, in_dim=512, reservoir_size=16384, reestimate_iters=2000, reestimate_maxiters=-1, warmup_iters=-1):
         super().__init__()
         self.num_code = num_code
         self.code_dim = code_dim
@@ -224,5 +227,68 @@ class L2VectorQuantizer(nn.Module):
         z_quant = z + (z_quant - z).detach()
         # reshape back to match original input shape
         z_quant = rearrange(z_quant, 'b h w c -> b c h w').contiguous()
+        min_encoding_indices = rearrange(min_encoding_indices, '(b n)->b n', b=z_quant.shape[0])
+        return z_quant, loss, (min_encoding_indices)
+
+@QUANTIZER_REGISTRY.register()
+class L2Vector3DQuantizer(nn.Module):
+
+    def __init__(self, num_code, code_dim, spatial_size, in_dim=512, reservoir_size=16384, reestimate_iters=2000, reestimate_maxiters=-1, warmup_iters=-1):
+        super().__init__()
+        self.num_code = num_code
+        self.code_dim = code_dim
+        self.spatial_size = spatial_size
+
+        self.beta = 0.25
+
+        self.embedding = nn.Embedding(self.num_code, self.code_dim)
+        self.embedding.weight.data.uniform_(-1.0 / self.num_code, 1.0 / self.num_code)
+
+        self.register_buffer('usage', torch.zeros(self.num_code, dtype=torch.int), persistent=False)
+
+    def get_feature(self, indices):
+        quant = self.embedding(indices)
+        quant = rearrange(quant, 'b (t h w) c -> b c t h w', h=self.spatial_size[0])
+        return quant
+
+    def get_distance(self, z, embedding):
+        # (b h w) c
+        z_flattened = z.view(-1, self.code_dim)
+        distance = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
+            torch.sum(embedding ** 2, dim=1) - 2 * \
+            torch.einsum('b c, d c -> b d', z_flattened, embedding)
+        return distance
+
+    def compute_codebook_loss(self, z_quant, z):
+        loss = torch.mean((z_quant.detach() - z)**2) + self.beta * torch.mean((z_quant - z.detach())**2)
+        return loss
+
+    def reset_usage(self):
+        self.usage = self.usage * 0
+
+    def get_usage(self):
+        codebook_usage = 1.0 * (self.num_code - (self.usage == 0).sum()) / self.num_code
+        return codebook_usage
+
+    def forward(self, z, iters=-1):
+
+        z = rearrange(z, 'b c t h w -> b t h w c').contiguous()
+        embedding = self.embedding.weight
+
+        distance = self.get_distance(z, embedding)
+
+        min_encoding_indices = torch.argmin(distance, dim=1)
+
+        if not self.training:
+            for idx in range(self.num_code):
+                self.usage[idx] += (min_encoding_indices == idx).sum()
+
+        z_quant = self.embedding(min_encoding_indices).view(z.shape)
+
+        loss = self.compute_codebook_loss(z_quant, z)
+        # preserve gradients
+        z_quant = z + (z_quant - z).detach()
+        # reshape back to match original input shape
+        z_quant = rearrange(z_quant, 'b t h w c -> b c t h w').contiguous()
         min_encoding_indices = rearrange(min_encoding_indices, '(b n)->b n', b=z_quant.shape[0])
         return z_quant, loss, (min_encoding_indices)

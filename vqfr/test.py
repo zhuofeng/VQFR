@@ -1,6 +1,7 @@
 import logging
 import torch
 from os import path as osp
+import pdb
 
 from vqfr.data import build_dataloader, build_dataset
 from vqfr.models import build_model
@@ -11,7 +12,7 @@ from vqfr.utils.options import dict2str, parse_options
 def test_pipeline(root_path):
     # parse options, set distributed setting, set ramdom seed
     opt, _ = parse_options(root_path, is_train=False)
-
+    
     torch.backends.cudnn.benchmark = True
     # torch.backends.cudnn.deterministic = True
 
@@ -33,12 +34,11 @@ def test_pipeline(root_path):
 
     # create model
     model = build_model(opt)
-
     for test_loader in test_loaders:
         test_set_name = test_loader.dataset.opt['name']
         logger.info(f'Testing {test_set_name}...')
+        # model.tonifty_validation(test_loader, current_iter=opt['name'], tb_logger=None, save_img=opt['val']['save_img'])
         model.validation(test_loader, current_iter=opt['name'], tb_logger=None, save_img=opt['val']['save_img'])
-
 
 if __name__ == '__main__':
     root_path = osp.abspath(osp.join(__file__, osp.pardir, osp.pardir))

@@ -1,0 +1,135 @@
+name: train_vqgan_3D
+model_type: VQGANModel
+scale: 1
+num_gpu: auto
+manual_seed: 0
+syncbn: true
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: OASIS3D
+    type: OASIS3DDataset
+    dataroot_gt: /dataT0/Free/tzheng/DIV2K/DIV2K_train_HR_sub_256
+    io_backend:
+      type: disk
+
+    use_hflip: true
+    mean: [0.5, 0.5, 0.5]
+    std: [0.5, 0.5, 0.5]
+    istrain: true
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 6
+    batch_size_per_gpu: 2
+    dataset_enlarge_ratio: 1
+    prefetch_mode: ~
+
+  val:
+    name: Val
+    type: OASISPaired3DDataset
+    dataroot_gt: /dataT0/Free/tzheng/DIV2K/DIV2K_valid_HR
+    dataroot_lq: /dataT0/Free/tzheng/DIV2K/DIV2K_valid_HR
+    io_backend:
+      type: disk
+    istrain: false
+
+    mean: [0.5, 0.5, 0.5]
+    std: [0.5, 0.5, 0.5]
+
+# network structures
+network_g:
+  type: VQGAN3D
+  base_channels: 64
+  channel_multipliers: [1,2,2,4,4,8]
+  num_enc_blocks: 2
+  use_enc_attention: true
+  num_dec_blocks: 2
+  use_dec_attention: true
+  code_dim: 256
+  quantizer_opt:
+    type: L2Vector3DQuantizer
+    num_code: 1024
+    code_dim: 256
+    spatial_size: [ 8, 8, 8 ]
+
+network_d:
+  type: StyleGAN2Discriminator
+  out_size: 128
+  channel_multiplier: 2
+  resample_kernel: [1, 3, 3, 1]
+
+# path
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~
+
+# training settings
+train:
+  optim_g:
+    type: Adam
+    lr: !!float 1e-4
+    weight_decay: 0
+    betas: [ 0.9, 0.96 ]
+
+  optim_d:
+    type: Adam
+    lr: !!float 1e-4
+    weight_decay: 0
+    betas: [ 0.9, 0.96 ]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [ 500000, 650000 ]
+    gamma: 0.5
+
+  total_iter: 800000
+  warmup_iter: -1  # no warm up
+  gan_start_iter: 50000
+
+  # losses
+  codebook_loss_weight: 1.0
+
+  pixel_opt:
+    type: L1Loss
+    loss_weight: !!float 1.0
+    reduction: mean
+
+  perceptual_opt:
+    type: LPIPS
+    perceptual_weight: !!float 1.0
+
+  # losses
+  gan_opt:
+    type: GANLoss
+    gan_type: wgan_softplus
+    loss_weight: !!float 1.0
+
+  r1_reg_weight: 10
+  net_d_reg_every: 16
+
+# validation settings
+val:
+  val_freq: !!float 5e3
+  save_img: true
+
+  metrics:
+    psnr: # metric name, can be arbitrary
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500

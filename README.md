@@ -85,7 +85,7 @@ Download pre-trained **VQFRv1/v2 models** [[Google Drive](https://drive.google.c
 ```bash
 # for real-world image
 python demo.py -i inputs/whole_imgs -o results -v 2.0 -s 2 -f 0.1
-
+python demo.py -i inputs/whole_imgs -o results -v 1.0 -s 2 -f 0.1
 # for cropped face
 python demo.py -i inputs/cropped_faces/ -o results -v 2.0 -s 1 -f 0.1 --aligned
 ```
@@ -119,6 +119,11 @@ We provide the training codes for VQFR (used in our paper).
 - Pre-train VQ codebook on FFHQ datasets.
 ```bash
  python -m torch.distributed.launch --nproc_per_node=8 --master_port=2022 vqfr/train.py -opt options/train/VQGAN/train_vqgan_v1_B16_800K.yml --launcher pytorch
+ python -m torch.distributed.launch --nproc_per_node=8 --master_port=2022 vqfr/train.py -opt options/train/VQGAN/train_custom.yml --launcher pytorch
+ CUDA_VISIBLE_DEVICES=0 python vqfr/train.py -opt options/train/VQGAN/train_custom.yml
+ CUDA_VISIBLE_DEVICES=0 python vqfr/train.py -opt options/train/VQGAN/train_custom_3D.yml
+ CUDA_VISIBLE_DEVICES=0 python vqfr/train.py -opt options/train/VQFR/train_custom.yml
+ CUDA_VISIBLE_DEVICES=2 python vqfr/train.py -opt options/train/VQFR/train_custom_deform.yml
 ```
 
 - Or download our pretrained **VQ codebook** [[Google Drive](https://drive.google.com/drive/folders/1lczKYEbARwe27FJlKoFdng7UnffGDjO2?usp=sharing)|[腾讯微云](https://share.weiyun.com/FbrOSsmk)] and put them in the `experiments/pretrained_models` folder.
@@ -210,6 +215,9 @@ For reproduce our evaluation results, you need to perform the following steps:
 - Then run the following command:
 ```bash
     python vqfr/test.py -opt options/test/VQFR/test_vqfr_v1.yml
+    CUDA_VISIBLE_DEVICES=1 python vqfr/test.py -opt options/test/VQGAN/test_custom.yml
+    CUDA_VISIBLE_DEVICES=1 python vqfr/test.py -opt options/test/VQFR/test_custom.yml
+    CUDA_VISIBLE_DEVICES=3 python vqfr/test.py -opt options/test/VQFR/test_custom.yml
 ```
 
 4. Run evaluation:

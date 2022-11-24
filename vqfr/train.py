@@ -2,8 +2,12 @@ import datetime
 import logging
 import math
 import time
+import pdb
 import torch
 from os import path as osp
+import numpy as np
+import nibabel as nib
+import os
 
 from vqfr.data import build_dataloader, build_dataset
 from vqfr.data.data_sampler import EnlargedSampler
@@ -12,6 +16,7 @@ from vqfr.models import build_model
 from vqfr.utils import (AvgTimer, MessageLogger, check_resume, get_env_info, get_root_logger, get_time_str,
                         init_tb_logger, init_wandb_logger, make_exp_dirs, mkdir_and_rename, scandir)
 from vqfr.utils.options import copy_opt_file, dict2str, parse_options
+
 
 
 def init_tb_loggers(opt):
@@ -119,7 +124,7 @@ def train_pipeline(root_path):
     # create train and validation dataloaders
     result = create_train_val_dataloader(opt, logger)
     train_loader, train_sampler, val_loaders, total_epochs, total_iters = result
-
+    
     # create model
     model = build_model(opt)
     if resume_state:  # resume training
@@ -130,10 +135,10 @@ def train_pipeline(root_path):
     else:
         start_epoch = 0
         current_iter = 0
-
+    
     # create message logger (formatted outputs)
     msg_logger = MessageLogger(opt, current_iter, tb_logger)
-
+    
     # dataloader prefetcher
     prefetch_mode = opt['datasets']['train'].get('prefetch_mode')
     if prefetch_mode is None or prefetch_mode == 'cpu':
@@ -154,17 +159,17 @@ def train_pipeline(root_path):
     for epoch in range(start_epoch, total_epochs + 1):
         train_sampler.set_epoch(epoch)
         prefetcher.reset()
-        train_data = prefetcher.next()
-
+        train_data = prefetcher.next() # minmax -1, 1
+        
         while train_data is not None:
             data_timer.record()
-
             current_iter += 1
             if current_iter > total_iters:
                 break
             # update learning rate
             model.update_learning_rate(current_iter, warmup_iter=opt['train'].get('warmup_iter', -1))
             # training
+
             model.feed_data(train_data)
             model.optimize_parameters(current_iter)
             iter_timer.record()
@@ -172,6 +177,7 @@ def train_pipeline(root_path):
                 # reset start time in msg_logger for more accurate eta_time
                 # not work in resume mode
                 msg_logger.reset_start_time()
+            
             # log
             if current_iter % opt['logger']['print_freq'] == 0:
                 log_vars = {'epoch': epoch, 'iter': current_iter}

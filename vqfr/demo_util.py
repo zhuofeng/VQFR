@@ -81,14 +81,15 @@ class VQFR_Demo():
                 },
                 quantizer_opt={
                     'Level_32': {
-                        'type': 'L2VectorQuantizer',
+                        'type': 'L2VectorQuantizerKmeans',
                         'in_dim': 512,
                         'num_code': 1024,
                         'code_dim': 256,
                         'reservoir_size': 16384,
                         'reestimate_iters': 2000,
                         'reestimate_maxiters': -1,
-                        'warmup_iters': -1
+                        'warmup_iters': -1,
+                        'spatial_size': [16, 16]
                     }
                 })
         elif arch == 'v2':
@@ -107,7 +108,7 @@ class VQFR_Demo():
                 },
                 code_selection_mode='Predict',  # Predict/Nearest
                 quantizer_opt={
-                    'type': 'L2VectorQuantizer',
+                    'type': 'L2VectorQuantizerKmeans',
                     'num_code': 1024,
                     'code_dim': 256,
                     'spatial_size': [16, 16]

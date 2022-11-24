@@ -3,6 +3,8 @@ import torch.distributed as dist
 from collections import OrderedDict
 from os import path as osp
 from tqdm import tqdm
+import pdb
+import os
 
 from vqfr.archs import build_network
 from vqfr.losses import build_loss
@@ -87,7 +89,9 @@ class VQGANModel(BaseModel):
             self.cri_gan = build_loss(train_opt['gan_opt']).to(self.device)
         else:
             self.cri_gan = None
-
+        # only train a VQ-VAE
+        self.cri_gan = None
+        self.cri_perceptual = None
         self.r1_reg_weight = train_opt['r1_reg_weight']  # for discriminator
         self.net_d_reg_every = train_opt['net_d_reg_every']
 
@@ -119,7 +123,7 @@ class VQGANModel(BaseModel):
 
         self.optimizer_g.zero_grad()
         self.output, codebook_loss = self.net_g(self.gt, current_iter, return_keys=('dec'))
-
+        
         l_total_g = 0.0
         # pixel reconstruction loss
         if self.cri_pix:
@@ -140,6 +144,7 @@ class VQGANModel(BaseModel):
         # codebook loss
         l_codebook = codebook_loss * self.opt['train']['codebook_loss_weight']
         loss_dict['l_codebook'] = l_codebook
+        
         l_total_g += l_codebook
 
         # gan loss
@@ -185,7 +190,7 @@ class VQGANModel(BaseModel):
             self.optimizer_d.step()
 
         self.log_dict = self.reduce_loss_dict(loss_dict)
-
+        
         if self.ema_decay > 0:
             self.model_ema(decay=self.ema_decay)
 
@@ -246,7 +251,6 @@ class VQGANModel(BaseModel):
             img_name = osp.splitext(osp.basename(val_data['gt_path'][0]))[0]
             self.feed_data(val_data)
             self.test()
-
             visuals = self.get_current_visuals()
             range = self.opt['val'].get('range', [-1, 1])
 

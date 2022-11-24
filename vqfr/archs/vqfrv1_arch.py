@@ -1,4 +1,5 @@
 import math
+import pdb
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -186,7 +187,7 @@ class VQFRv1(nn.Module):
             align_from_patch=align_from_patch)
 
         self.quantizer = GeneralizedQuantizer(quantizer_opt)
-
+        
         self.apply(self._init_weights)
 
         for k, v in self.named_parameters():
@@ -236,8 +237,8 @@ class VQFRv1(nn.Module):
         res = {}
 
         enc_dict = self.encode(x_lq)
-        quant_dict, _, feat_dict = self.quant(enc_dict, iters=iters)
-
+        quant_dict, _, feat_dict = self.quant(enc_dict, iters=iters) # vqvae, replace the code with a code in code dictionary
+        
         if 'feat_dict' in return_keys:
             res['feat_dict'] = feat_dict
 
@@ -246,5 +247,5 @@ class VQFRv1(nn.Module):
             main_dec = self.main_decode(dec_feat_dict, inpfeat, x_lq)
             res['dec'] = dec
             res['main_dec'] = main_dec
-
+        
         return res

@@ -3,6 +3,8 @@ import cv2
 import glob
 import numpy as np
 import os
+import pdb
+
 import torch
 from basicsr.utils import imwrite
 
@@ -89,16 +91,16 @@ def main():
     elif args.version == '2.0':
         arch = 'v2'
         model_name = 'VQFR_v2'
+        # model_name = 'VQ_Codebook_FFHQ512-39165968'
         fidelity_ratio = args.fidelity_ratio
         assert fidelity_ratio >= 0.0 and fidelity_ratio <= 1.0, 'fidelity_ratio must in range[0,1]'
     else:
         raise ValueError(f'Wrong model version {args.version}.')
-
     # determine model paths
     model_path = os.path.join('experiments/pretrained_models', model_name + '.pth')
     if not os.path.isfile(model_path):
         raise ValueError(f'Model {model_name} does not exist.')
-
+    
     restorer = VQFR_Demo(model_path=model_path, upscale=args.upscale, arch=arch, bg_upsampler=bg_upsampler)
 
     # ------------------------ restore ------------------------
@@ -116,7 +118,7 @@ def main():
             has_aligned=args.aligned,
             only_center_face=args.only_center_face,
             paste_back=True)
-
+        
         # save faces
         for idx, (cropped_face, restored_face) in enumerate(zip(cropped_faces, restored_faces)):
             # save cropped face
